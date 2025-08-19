@@ -1,24 +1,23 @@
 package org.example.load;
 
-import org.example.client.LoadHttpClient;
-import org.example.client.SLAMonitor;
-import org.example.client.TestMetrics;
-import org.example.client.TestPhase;
-import org.example.client.response.RestResponseData;
-import org.example.dto.TestPlanSpec;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import org.example.client.LoadHttpClient;
+import org.example.client.SLAMonitor;
+import org.example.client.SLAViolation;
+import org.example.client.enums.TestPhase;
+import org.example.client.metrics.ComprehensiveTestReport;
+import org.example.client.metrics.TestMetrics;
+import org.example.client.response.RestResponseData;
+import org.example.dto.TestPlanSpec;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-/**
- * Enhanced Load Test Execution Runner with fixed cleanup and proper exception handling
- */
+/** Enhanced Load Test Execution Runner with fixed cleanup and proper exception handling */
 public class LoadTestExecutionRunner {
   private static final Logger log = LoggerFactory.getLogger(LoadTestExecutionRunner.class);
 
@@ -41,12 +40,12 @@ public class LoadTestExecutionRunner {
 
     // Initialize HTTP client with global config
     var globalConfig = testPlanSpec.getTestSpec().getGlobalConfig();
-    this.httpClient = new LoadHttpClient(
+    this.httpClient =
+        new LoadHttpClient(
             globalConfig.getBaseUrl(),
             globalConfig.getTimeouts().getConnectionTimeoutMs() / 1000, // convert to seconds
             globalConfig.getHeaders(),
-            globalConfig.getVars()
-    );
+            globalConfig.getVars());
 
     // Initialize thread pools
     int maxThreads = calculateMaxThreads();
@@ -54,11 +53,14 @@ public class LoadTestExecutionRunner {
     this.schedulerService = Executors.newScheduledThreadPool(6); // Increased for metrics
 
     // Initialize enhanced metrics system
-    this.metrics = new TestMetrics(schedulerService, testPlanSpec.getExecution().getLoadModel().getType());
+    this.metrics =
+        new TestMetrics(schedulerService, testPlanSpec.getExecution().getLoadModel().getType());
     this.slaMonitor = new SLAMonitor(testPlanSpec.getExecution().getGlobalSla(), metrics);
 
-    log.info("LoadTestExecutionRunner initialized for {} model with {} max threads",
-            testPlanSpec.getExecution().getLoadModel().getType(), maxThreads);
+    log.info(
+        "LoadTestExecutionRunner initialized for {} model with {} max threads",
+        testPlanSpec.getExecution().getLoadModel().getType(),
+        maxThreads);
   }
 
   // FIXED: Change the iteration logic in executeClosedWorkload()
@@ -73,9 +75,13 @@ public class LoadTestExecutionRunner {
     int totalUsers = loadModel.getUsers();
     int iterationsPerUser = loadModel.getIterations(); // FIXED: Each user does ALL iterations
 
-    log.info("Executing CLOSED workload: {} users, {} iterations per user (total: {}), ramp-up: {}s, hold: {}s",
-            totalUsers, iterationsPerUser, totalUsers * iterationsPerUser,
-            rampUpDuration.getSeconds(), holdDuration.getSeconds());
+    log.info(
+        "Executing CLOSED workload: {} users, {} iterations per user (total: {}), ramp-up: {}s, hold: {}s",
+        totalUsers,
+        iterationsPerUser,
+        totalUsers * iterationsPerUser,
+        rampUpDuration.getSeconds(),
+        holdDuration.getSeconds());
 
     // Phase 1: Warmup
     if (warmupDuration.toMillis() > 0) {
@@ -92,11 +98,14 @@ public class LoadTestExecutionRunner {
     Instant testEndTime = holdStart.plus(holdDuration);
 
     // Schedule phase transitions
-    schedulerService.schedule(() -> {
-      if (testRunning.get()) {
-        metrics.setPhase(TestPhase.HOLD);
-      }
-    }, rampUpDuration.toMillis(), TimeUnit.MILLISECONDS);
+    schedulerService.schedule(
+        () -> {
+          if (testRunning.get()) {
+            metrics.setPhase(TestPhase.HOLD);
+          }
+        },
+        rampUpDuration.toMillis(),
+        TimeUnit.MILLISECONDS);
 
     // Schedule hold time termination
     scheduleHoldTimeTermination(testEndTime);
@@ -112,16 +121,20 @@ public class LoadTestExecutionRunner {
       final long finalUserStartDelay = userStartDelay;
       final int finalIterationsPerUser = iterationsPerUser; // Each user gets ALL iterations
 
-      CompletableFuture<Void> userTask = CompletableFuture.runAsync(() -> {
-        executeUserThread(finalUserId, finalUserStartDelay, finalIterationsPerUser, testEndTime);
-      }, executorService);
+      CompletableFuture<Void> userTask =
+          CompletableFuture.runAsync(
+              () -> {
+                executeUserThread(
+                    finalUserId, finalUserStartDelay, finalIterationsPerUser, testEndTime);
+              },
+              executorService);
 
       userTasks.add(userTask);
     }
 
     // Wait for all users to complete or test to be terminated
-    CompletableFuture<Void> allUserTasks = CompletableFuture.allOf(
-            userTasks.toArray(new CompletableFuture[0]));
+    CompletableFuture<Void> allUserTasks =
+        CompletableFuture.allOf(userTasks.toArray(new CompletableFuture[0]));
 
     try {
       allUserTasks.get();
@@ -152,8 +165,10 @@ public class LoadTestExecutionRunner {
       for (int i = 0; i < iterations && testRunning.get(); i++) {
         // Check if hold time expired
         if (Instant.now().isAfter(testEndTime)) {
-          log.debug("User {} stopping due to hold time expiration after {} iterations",
-                  userId, completedIterations);
+          log.debug(
+              "User {} stopping due to hold time expiration after {} iterations",
+              userId,
+              completedIterations);
           break;
         }
 
@@ -166,7 +181,8 @@ public class LoadTestExecutionRunner {
         }
       }
 
-      log.debug("User {} completed {} out of {} iterations", userId, completedIterations, iterations);
+      log.debug(
+          "User {} completed {} out of {} iterations", userId, completedIterations, iterations);
 
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
@@ -201,55 +217,55 @@ public class LoadTestExecutionRunner {
     }
   }
 
-  /**
-   * Main execution method
-   */
+  /** Main execution method */
   public CompletableFuture<ComprehensiveTestReport> execute() {
-    return CompletableFuture.supplyAsync(() -> {
-      try {
-        log.info("Starting load test execution: {}", testPlanSpec.getTestSpec().getId());
+    return CompletableFuture.supplyAsync(
+        () -> {
+          try {
+            log.info("Starting load test execution: {}", testPlanSpec.getTestSpec().getId());
 
-        testRunning.set(true);
-        Instant testStartTime = Instant.now();
-        metrics.setPhase(TestPhase.INITIALIZING);
+            testRunning.set(true);
+            Instant testStartTime = Instant.now();
+            metrics.setPhase(TestPhase.INITIALIZING);
 
-        // Start SLA monitoring
-        startSLAMonitoring();
+            // Start SLA monitoring
+            startSLAMonitoring();
 
-        // Execute based on workload model
-        var loadModel = testPlanSpec.getExecution().getLoadModel();
-        if (loadModel.getType() == TestPlanSpec.WorkLoadModel.CLOSED) {
-          executeClosedWorkload();
-        } else {
-          executeOpenWorkload();
-        }
+            // Execute based on workload model
+            var loadModel = testPlanSpec.getExecution().getLoadModel();
+            if (loadModel.getType() == TestPlanSpec.WorkLoadModel.CLOSED) {
+              executeClosedWorkload();
+            } else {
+              executeOpenWorkload();
+            }
 
-        // Wait for completion or termination
-        waitForTestCompletion();
+            // Wait for completion or termination
+            waitForTestCompletion();
 
-        Instant testEndTime = Instant.now();
-        Duration totalDuration = Duration.between(testStartTime, testEndTime);
+            Instant testEndTime = Instant.now();
+            Duration totalDuration = Duration.between(testStartTime, testEndTime);
 
-        metrics.setPhase(TestPhase.COMPLETED);
+            metrics.setPhase(TestPhase.COMPLETED);
 
-        log.info("Load test completed. Duration: {}s, Reason: {}",
-                totalDuration.getSeconds(), terminationReason.get());
+            log.info(
+                "Load test completed. Duration: {}s, Reason: {}",
+                totalDuration.getSeconds(),
+                terminationReason.get());
 
-        return generateFinalReport(testEndTime);
+            return generateFinalReport(testEndTime);
 
-      } catch (Exception e) {
-        log.error("Load test execution failed", e);
-        metrics.setPhase(TestPhase.TERMINATED);
-        terminateTest("EXECUTION_ERROR: " + e.getMessage());
-        throw new RuntimeException("Load test execution failed", e);
+          } catch (Exception e) {
+            log.error("Load test execution failed", e);
+            metrics.setPhase(TestPhase.TERMINATED);
+            terminateTest("EXECUTION_ERROR: " + e.getMessage());
+            throw new RuntimeException("Load test execution failed", e);
 
-      } finally {
-        cleanup();
-      }
-    }, executorService);
+          } finally {
+            cleanup();
+          }
+        },
+        executorService);
   }
-
-
 
   private void executeOpenWorkload() {
     var loadModel = testPlanSpec.getExecution().getLoadModel();
@@ -260,8 +276,11 @@ public class LoadTestExecutionRunner {
     int arrivalRate = loadModel.getArrivalRatePerSec();
     int maxConcurrent = loadModel.getMaxConcurrent();
 
-    log.info("Executing OPEN workload: {} req/sec, max {} concurrent, duration: {}s",
-            arrivalRate, maxConcurrent, testDuration.getSeconds());
+    log.info(
+        "Executing OPEN workload: {} req/sec, max {} concurrent, duration: {}s",
+        arrivalRate,
+        maxConcurrent,
+        testDuration.getSeconds());
 
     // Phase 1: Warmup
     if (warmupDuration.toMillis() > 0) {
@@ -282,30 +301,39 @@ public class LoadTestExecutionRunner {
     Semaphore concurrencyLimiter = new Semaphore(maxConcurrent);
     long intervalMicros = 1_000_000L / arrivalRate; // microseconds between requests
 
-    ScheduledFuture<?> rateTask = schedulerService.scheduleAtFixedRate(() -> {
-      if (!testRunning.get() || Instant.now().isAfter(testEndTime)) {
-        return;
-      }
+    ScheduledFuture<?> rateTask =
+        schedulerService.scheduleAtFixedRate(
+            () -> {
+              if (!testRunning.get() || Instant.now().isAfter(testEndTime)) {
+                return;
+              }
 
-      if (concurrencyLimiter.tryAcquire()) {
-        metrics.incrementScheduledRequests();
+              if (concurrencyLimiter.tryAcquire()) {
+                metrics.incrementScheduledRequests();
 
-        CompletableFuture<Void> requestTask = CompletableFuture.runAsync(() -> {
-          executeRequest(concurrencyLimiter, -1, false); // -1 = no specific user
-        }, executorService);
+                CompletableFuture<Void> requestTask =
+                    CompletableFuture.runAsync(
+                        () -> {
+                          executeRequest(concurrencyLimiter, -1, false); // -1 = no specific user
+                        },
+                        executorService);
 
-        // Handle request completion
-        requestTask.whenComplete((result, throwable) -> {
-          if (throwable != null) {
-            log.debug("Request execution failed: {}", throwable.getMessage());
-          }
-        });
-      } else {
-        // Back-pressure: too many concurrent requests
-        metrics.incrementBackPressureEvents();
-        log.debug("Back-pressure: max concurrent requests reached");
-      }
-    }, 0, intervalMicros, TimeUnit.MICROSECONDS);
+                // Handle request completion
+                requestTask.whenComplete(
+                    (result, throwable) -> {
+                      if (throwable != null) {
+                        log.debug("Request execution failed: {}", throwable.getMessage());
+                      }
+                    });
+              } else {
+                // Back-pressure: too many concurrent requests
+                metrics.incrementBackPressureEvents();
+                log.debug("Back-pressure: max concurrent requests reached");
+              }
+            },
+            0,
+            intervalMicros,
+            TimeUnit.MICROSECONDS);
 
     // Wait for test completion
     try {
@@ -331,17 +359,22 @@ public class LoadTestExecutionRunner {
 
     Instant warmupEnd = Instant.now().plus(warmupDuration);
 
-    ScheduledFuture<?> warmupTask = schedulerService.scheduleAtFixedRate(() -> {
-      if (!testRunning.get() || Instant.now().isAfter(warmupEnd)) {
-        return;
-      }
+    ScheduledFuture<?> warmupTask =
+        schedulerService.scheduleAtFixedRate(
+            () -> {
+              if (!testRunning.get() || Instant.now().isAfter(warmupEnd)) {
+                return;
+              }
 
-      try {
-        executeRequest(null, -1, true); // warmup request
-      } catch (Exception e) {
-        log.debug("Warmup request failed: {}", e.getMessage());
-      }
-    }, 0, 1000, TimeUnit.MILLISECONDS); // 1 request per second during warmup
+              try {
+                executeRequest(null, -1, true); // warmup request
+              } catch (Exception e) {
+                log.debug("Warmup request failed: {}", e.getMessage());
+              }
+            },
+            0,
+            1000,
+            TimeUnit.MILLISECONDS); // 1 request per second during warmup
 
     // Wait for warmup to complete
     try {
@@ -354,8 +387,6 @@ public class LoadTestExecutionRunner {
 
     log.info("Warmup phase completed");
   }
-
-
 
   private void executeRequest(Semaphore concurrencyLimiter, int userId, boolean isWarmup) {
     try {
@@ -380,8 +411,11 @@ public class LoadTestExecutionRunner {
         }
       }
 
-      log.debug("Request completed: {} ms, status: {}, user: {}",
-              responseTime, response.getStatusCode(), userId);
+      log.debug(
+          "Request completed: {} ms, status: {}, user: {}",
+          responseTime,
+          response.getStatusCode(),
+          userId);
 
     } catch (Exception e) {
       if (!isWarmup) {
@@ -401,8 +435,6 @@ public class LoadTestExecutionRunner {
     }
   }
 
-
-
   private void startSLAMonitoring() {
     if (testPlanSpec.getExecution().getGlobalSla() == null) {
       return;
@@ -410,63 +442,73 @@ public class LoadTestExecutionRunner {
 
     log.info("Starting SLA monitoring");
 
-    schedulerService.scheduleAtFixedRate(() -> {
-      if (!testRunning.get()) return;
+    schedulerService.scheduleAtFixedRate(
+        () -> {
+          if (!testRunning.get()) return;
 
-      SLAViolation violation = slaMonitor.checkSLA();
-      if (violation != null) {
-        log.warn("SLA violation detected: {}", violation.getReason());
+          SLAViolation violation = slaMonitor.checkSLA();
+          if (violation != null) {
+            log.warn("SLA violation detected: {}", violation.getReason());
 
-        // Record SLA violation in metrics
-        var sla = testPlanSpec.getExecution().getGlobalSla();
-        String violationType;
-        double actualValue;
-        double threshold;
+            // Record SLA violation in metrics
+            var sla = testPlanSpec.getExecution().getGlobalSla();
+            String violationType;
+            double actualValue;
+            double threshold;
 
-        if (violation.getReason().contains("Error rate")) {
-          violationType = "ERROR_RATE";
-          actualValue = metrics.getErrorRate();
-          threshold = sla.getErrorRatePct();
-        } else if (violation.getReason().contains("P95 response time")) {
-          violationType = "P95_RESPONSE_TIME";
-          actualValue = metrics.getP95ResponseTime();
-          threshold = sla.getP95LtMs();
-        } else {
-          violationType = "UNKNOWN";
-          actualValue = 0;
-          threshold = 0;
-        }
+            if (violation.getReason().contains("Error rate")) {
+              violationType = "ERROR_RATE";
+              actualValue = metrics.getErrorRate();
+              threshold = sla.getErrorRatePct();
+            } else if (violation.getReason().contains("P95 response time")) {
+              violationType = "P95_RESPONSE_TIME";
+              actualValue = metrics.getP95ResponseTime();
+              threshold = sla.getP95LtMs();
+            } else {
+              violationType = "UNKNOWN";
+              actualValue = 0;
+              threshold = 0;
+            }
 
-        var onError = sla.getOnError();
-        String action = onError != null ? onError.getAction().name() : "UNKNOWN";
+            var onError = sla.getOnError();
+            String action = onError != null ? onError.getAction().name() : "UNKNOWN";
 
-        metrics.recordSLAViolation(violationType, actualValue, threshold, action);
+            metrics.recordSLAViolation(violationType, actualValue, threshold, action);
 
-        if (onError != null && onError.getAction() == TestPlanSpec.OnErrorAction.STOP) {
-          terminateTest("SLA_VIOLATION: " + violation.getReason());
-        } else {
-          log.info("SLA violation detected but continuing due to OnError.CONTINUE");
-        }
-      }
-    }, 5, 5, TimeUnit.SECONDS); // Check SLA every 5 seconds
+            if (onError != null && onError.getAction() == TestPlanSpec.OnErrorAction.STOP) {
+              terminateTest("SLA_VIOLATION: " + violation.getReason());
+            } else {
+              log.info("SLA violation detected but continuing due to OnError.CONTINUE");
+            }
+          }
+        },
+        5,
+        5,
+        TimeUnit.SECONDS); // Check SLA every 5 seconds
   }
 
   private void scheduleHoldTimeTermination(Instant testEndTime) {
     long delayMs = Duration.between(Instant.now(), testEndTime).toMillis();
 
-    schedulerService.schedule(() -> {
-      if (testRunning.get()) {
-        terminateTest("HOLD_TIME_EXPIRED");
-      }
-    }, delayMs, TimeUnit.MILLISECONDS);
+    schedulerService.schedule(
+        () -> {
+          if (testRunning.get()) {
+            terminateTest("HOLD_TIME_EXPIRED");
+          }
+        },
+        delayMs,
+        TimeUnit.MILLISECONDS);
   }
 
   private void scheduleDurationTermination(Duration testDuration) {
-    schedulerService.schedule(() -> {
-      if (testRunning.get()) {
-        terminateTest("DURATION_COMPLETED");
-      }
-    }, testDuration.toMillis(), TimeUnit.MILLISECONDS);
+    schedulerService.schedule(
+        () -> {
+          if (testRunning.get()) {
+            terminateTest("DURATION_COMPLETED");
+          }
+        },
+        testDuration.toMillis(),
+        TimeUnit.MILLISECONDS);
   }
 
   private void terminateTest(String reason) {
@@ -499,7 +541,7 @@ public class LoadTestExecutionRunner {
       }
     }
 
-    if (metrics.getActiveRequests().get()> 0) {
+    if (metrics.getActiveRequests().get() > 0) {
       log.warn("Timeout waiting for {} active requests to complete", metrics.getActiveRequests());
     }
   }
@@ -532,10 +574,8 @@ public class LoadTestExecutionRunner {
   private ComprehensiveTestReport generateFinalReport(Instant testEndTime) {
     log.info("Generating comprehensive test report...");
 
-    ComprehensiveTestReport report = metrics.generateComprehensiveReport(
-            testEndTime,
-            terminationReason.get()
-    );
+    ComprehensiveTestReport report =
+        metrics.generateComprehensiveReport(testEndTime, terminationReason.get());
 
     // Log summary
     logTestSummary(report);
@@ -556,11 +596,15 @@ public class LoadTestExecutionRunner {
     // Request metrics
     summary.append("--- REQUEST METRICS ---\n");
     summary.append(String.format("Total Requests: %d\n", report.getTotalRequests()));
-    summary.append(String.format("Successful: %d (%.2f%%)\n",
+    summary.append(
+        String.format(
+            "Successful: %d (%.2f%%)\n",
             report.getSuccessfulRequests(),
-            report.getTotalRequests() > 0 ? (double) report.getSuccessfulRequests() / report.getTotalRequests() * 100 : 0));
-    summary.append(String.format("Failed: %d (%.2f%%)\n",
-            report.getFailedRequests(), report.getErrorRate()));
+            report.getTotalRequests() > 0
+                ? (double) report.getSuccessfulRequests() / report.getTotalRequests() * 100
+                : 0));
+    summary.append(
+        String.format("Failed: %d (%.2f%%)\n", report.getFailedRequests(), report.getErrorRate()));
     summary.append("\n");
 
     // Response time metrics
@@ -583,18 +627,26 @@ public class LoadTestExecutionRunner {
     if (!report.getStatusCodeDistribution().isEmpty()) {
       summary.append("--- STATUS CODE DISTRIBUTION ---\n");
       report.getStatusCodeDistribution().entrySet().stream()
-              .sorted(Map.Entry.comparingByKey())
-              .forEach(entry -> summary.append(String.format("%d: %d requests\n",
-                      entry.getKey(), entry.getValue())));
+          .sorted(Map.Entry.comparingByKey())
+          .forEach(
+              entry ->
+                  summary.append(
+                      String.format("%d: %d requests\n", entry.getKey(), entry.getValue())));
       summary.append("\n");
     }
 
     // SLA violations
-    if (report.getSlaViolationSummary() != null && report.getSlaViolationSummary().getTotalViolations() > 0) {
+    if (report.getSlaViolationSummary() != null
+        && report.getSlaViolationSummary().getTotalViolations() > 0) {
       summary.append("--- SLA VIOLATIONS ---\n");
-      summary.append(String.format("Total Violations: %d\n", report.getSlaViolationSummary().getTotalViolations()));
-      report.getSlaViolationSummary().getViolationsByType().forEach((type, count) ->
-              summary.append(String.format("%s: %d violations\n", type, count)));
+      summary.append(
+          String.format(
+              "Total Violations: %d\n", report.getSlaViolationSummary().getTotalViolations()));
+      report
+          .getSlaViolationSummary()
+          .getViolationsByType()
+          .forEach(
+              (type, count) -> summary.append(String.format("%s: %d violations\n", type, count)));
       summary.append("\n");
     }
 
@@ -612,11 +664,15 @@ public class LoadTestExecutionRunner {
       var windowAnalysis = report.getWindowAnalysis();
       summary.append("--- WINDOW ANALYSIS ---\n");
       summary.append(String.format("Total Windows: %d\n", windowAnalysis.getTotalWindows()));
-      summary.append(String.format("Throughput: Avg=%.2f, Max=%.2f req/sec\n",
+      summary.append(
+          String.format(
+              "Throughput: Avg=%.2f, Max=%.2f req/sec\n",
               windowAnalysis.getThroughputStats().getAverage(),
               windowAnalysis.getThroughputStats().getMax()));
       if (windowAnalysis.getResponseTimeStats().getCount() > 0) {
-        summary.append(String.format("Response Time: Avg=%.2f, Max=%.2f ms\n",
+        summary.append(
+            String.format(
+                "Response Time: Avg=%.2f, Max=%.2f ms\n",
                 windowAnalysis.getResponseTimeStats().getAverage(),
                 windowAnalysis.getResponseTimeStats().getMax()));
       }
@@ -672,7 +728,10 @@ public class LoadTestExecutionRunner {
 
       // Wait for existing tasks to complete
       if (!executor.awaitTermination(timeoutSeconds, TimeUnit.SECONDS)) {
-        log.warn("{} executor did not terminate within {} seconds, forcing shutdown", name, timeoutSeconds);
+        log.warn(
+            "{} executor did not terminate within {} seconds, forcing shutdown",
+            name,
+            timeoutSeconds);
 
         // Force shutdown
         executor.shutdownNow();
@@ -706,4 +765,3 @@ public class LoadTestExecutionRunner {
     }
   }
 }
-

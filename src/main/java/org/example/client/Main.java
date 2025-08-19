@@ -2,6 +2,7 @@ package org.example.client;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import java.util.concurrent.CompletableFuture;
+import org.example.client.metrics.ComprehensiveTestReport;
 import org.example.dto.TestPlanSpec;
 import org.example.load.LoadTestExecutionRunner;
 import org.example.util.JsonUtil;
@@ -74,14 +75,14 @@ public class Main {
                 }
                 """;
     TestPlanSpec read = JsonUtil.read(temp, TestPlanSpec.class);
-      TestPlanSpec.LoadModel loadModel = read.getExecution().getLoadModel();
-      loadModel.setType(TestPlanSpec.WorkLoadModel.CLOSED);
-      loadModel.setIterations(50);
-      loadModel.setHoldFor("1m");
-      loadModel.setUsers(50);
-      loadModel.setRampUp("30s");
-      loadModel.setWarmup("5s");
-      LoadTestExecutionRunner runner = new LoadTestExecutionRunner(read);
+    TestPlanSpec.LoadModel loadModel = read.getExecution().getLoadModel();
+    loadModel.setType(TestPlanSpec.WorkLoadModel.CLOSED);
+    loadModel.setIterations(100);
+    loadModel.setHoldFor("1m");
+    loadModel.setUsers(100);
+    loadModel.setRampUp("60");
+    loadModel.setWarmup("5s");
+    LoadTestExecutionRunner runner = new LoadTestExecutionRunner(read);
     CompletableFuture<ComprehensiveTestReport> execute = runner.execute();
     execute
         .thenAccept(
@@ -98,7 +99,5 @@ public class Main {
               System.err.println("Test execution failed: " + throwable.getMessage());
               return null;
             });
-}
-
-
+  }
 }

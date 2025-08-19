@@ -38,7 +38,6 @@ dependencies {
     testImplementation 'org.assertj:assertj-core:3.24.2'
 
     testImplementation 'org.awaitility:awaitility:4.2.0'
-
 }
 
 spotless {
@@ -66,10 +65,13 @@ test {
 
     // Fix Java agent warnings for newer JDK versions
     jvmArgs = [
-            '-XX:+EnableDynamicAgentLoading',  // Allow dynamic agent loading
-            '-Djdk.instrument.traceUsage=false',  // Disable instrumentation tracing
-            '--add-opens=java.base/java.lang=ALL-UNNAMED',  // Required for Mockito
-            '--add-opens=java.base/java.util=ALL-UNNAMED'   // Required for Mockito
+        '-XX:+EnableDynamicAgentLoading',
+        // Allow dynamic agent loading
+        '-Djdk.instrument.traceUsage=false',
+        // Disable instrumentation tracing
+        '--add-opens=java.base/java.lang=ALL-UNNAMED',
+        // Required for Mockito
+        '--add-opens=java.base/java.util=ALL-UNNAMED'   // Required for Mockito
     ]
 
     // Increase test timeouts for load testing
