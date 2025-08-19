@@ -17,7 +17,35 @@ import org.example.dto.TestPlanSpec;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/** Enhanced Load Test Execution Runner with fixed cleanup and proper exception handling */
+/**
+ * Enhanced Load Test Execution Runner that manages and executes load tests with proper resource
+ * cleanup and exception handling.
+ *
+ * <p>This class supports both CLOSED and OPEN workload models:
+ *
+ * <ul>
+ *   <li><b>CLOSED Model:</b> Fixed number of virtual users, each performing a specified number of
+ *       iterations
+ *   <li><b>OPEN Model:</b> Arrival rate-based testing with maximum concurrency limits
+ * </ul>
+ *
+ * <p>Features include:
+ *
+ * <ul>
+ *   <li>Multi-phase test execution (warmup, ramp-up, hold, completion)
+ *   <li>Real-time SLA monitoring and violation handling
+ *   <li>Comprehensive metrics collection and reporting
+ *   <li>Thread-safe execution with proper resource management
+ *   <li>Configurable think times and back-pressure handling
+ * </ul>
+ *
+ * <p>Thread Safety: This class is thread-safe and uses concurrent data structures and atomic
+ * operations for state management.
+ *
+ * @author Load Testing Framework
+ * @version 1.0
+ * @since 1.0
+ */
 public class LoadTestExecutionRunner {
   private static final Logger log = LoggerFactory.getLogger(LoadTestExecutionRunner.class);
 
@@ -35,6 +63,22 @@ public class LoadTestExecutionRunner {
   private final TestMetrics metrics;
   private final SLAMonitor slaMonitor;
 
+  /**
+   * Constructs a new LoadTestExecutionRunner with the specified test plan.
+   *
+   * <p>Initializes all required components including:
+   *
+   * <ul>
+   *   <li>HTTP client configured with global settings
+   *   <li>Thread pools sized based on workload model
+   *   <li>Metrics collection system
+   *   <li>SLA monitoring system
+   * </ul>
+   *
+   * @param testPlanSpec the test plan specification containing all test configuration
+   * @throws IllegalArgumentException if testPlanSpec is null or invalid
+   * @throws IllegalStateException if required configuration is missing
+   */
   public LoadTestExecutionRunner(TestPlanSpec testPlanSpec) {
     this.testPlanSpec = testPlanSpec;
 
@@ -63,8 +107,30 @@ public class LoadTestExecutionRunner {
         maxThreads);
   }
 
-  // FIXED: Change the iteration logic in executeClosedWorkload()
-
+  /**
+   * Executes a CLOSED workload model where a fixed number of virtual users each perform a specified
+   * number of iterations.
+   *
+   * <p>The execution follows this sequence:
+   *
+   * <ol>
+   *   <li>Optional warmup phase
+   *   <li>Ramp-up phase - users are started gradually
+   *   <li>Hold phase - all users are active and performing iterations
+   *   <li>Completion - when all iterations are done or hold time expires
+   * </ol>
+   *
+   * <p>Each user thread:
+   *
+   * <ul>
+   *   <li>Waits for its designated start delay (ramp-up)
+   *   <li>Performs all assigned iterations
+   *   <li>Applies think time between requests if configured
+   *   <li>Stops when iterations complete or hold time expires
+   * </ul>
+   *
+   * @throws RuntimeException if execution fails or is interrupted
+   */
   private void executeClosedWorkload() {
     var loadModel = testPlanSpec.getExecution().getLoadModel();
 
@@ -150,7 +216,26 @@ public class LoadTestExecutionRunner {
     }
   }
 
-  // ENHANCED: Better user thread execution with more detailed logging
+  /**
+   * Executes a single user thread in a CLOSED workload model.
+   *
+   * <p>This method handles the lifecycle of a single virtual user:
+   *
+   * <ul>
+   *   <li>Waits for the designated start delay (ramp-up timing)
+   *   <li>Registers user start with metrics
+   *   <li>Performs the specified number of iterations
+   *   <li>Applies think time between requests
+   *   <li>Stops on hold time expiration or test termination
+   *   <li>Registers user completion with metrics
+   * </ul>
+   *
+   * @param userId the unique identifier for this user thread
+   * @param startDelay the delay in milliseconds before this user should start
+   * @param iterations the number of iterations this user should perform
+   * @param testEndTime the absolute time when the test should end (hold time expiration)
+   * @throws InterruptedException if the thread is interrupted during execution
+   */
   private void executeUserThread(int userId, long startDelay, int iterations, Instant testEndTime) {
     try {
       // Wait for ramp-up delay
@@ -193,7 +278,18 @@ public class LoadTestExecutionRunner {
     }
   }
 
-  // OPTIONAL: Enhanced think time to make it more realistic
+  /**
+   * Applies think time between requests as specified in the test configuration.
+   *
+   * <p>Think time simulates the delay a real user would have between actions. Supports two modes:
+   *
+   * <ul>
+   *   <li><b>FIXED:</b> Always uses the minimum value
+   *   <li><b>RANDOM:</b> Random delay between min and max values
+   * </ul>
+   *
+   * @throws InterruptedException if the thread is interrupted during the delay
+   */
   private void applyThinkTime() {
     var thinkTime = testPlanSpec.getExecution().getThinkTime();
     if (thinkTime == null) return;
@@ -217,7 +313,26 @@ public class LoadTestExecutionRunner {
     }
   }
 
-  /** Main execution method */
+  /**
+   * Main execution method that orchestrates the entire load test.
+   *
+   * <p>This method:
+   *
+   * <ol>
+   *   <li>Initializes test state and metrics
+   *   <li>Starts SLA monitoring
+   *   <li>Delegates to the appropriate workload execution method
+   *   <li>Waits for test completion
+   *   <li>Generates and returns a comprehensive test report
+   *   <li>Ensures proper cleanup regardless of success or failure
+   * </ol>
+   *
+   * <p>The execution is asynchronous and returns immediately with a CompletableFuture that will
+   * complete when the test finishes.
+   *
+   * @return a CompletableFuture that completes with a comprehensive test report
+   * @throws RuntimeException if the test execution fails
+   */
   public CompletableFuture<ComprehensiveTestReport> execute() {
     return CompletableFuture.supplyAsync(
         () -> {
@@ -267,6 +382,29 @@ public class LoadTestExecutionRunner {
         executorService);
   }
 
+  /**
+   * Executes an OPEN workload model based on arrival rate and maximum concurrency.
+   *
+   * <p>The OPEN model simulates real-world traffic patterns where requests arrive at a specified
+   * rate regardless of response times. Key characteristics:
+   *
+   * <ul>
+   *   <li>Fixed arrival rate (requests per second)
+   *   <li>Maximum concurrency limit to prevent resource exhaustion
+   *   <li>Back-pressure handling when concurrency limit is reached
+   *   <li>Duration-based execution (not iteration-based)
+   * </ul>
+   *
+   * <p>Execution phases:
+   *
+   * <ol>
+   *   <li>Optional warmup phase
+   *   <li>Main execution at target arrival rate
+   *   <li>Graceful completion of remaining requests
+   * </ol>
+   *
+   * @throws RuntimeException if execution fails or is interrupted
+   */
   private void executeOpenWorkload() {
     var loadModel = testPlanSpec.getExecution().getLoadModel();
 
@@ -354,6 +492,24 @@ public class LoadTestExecutionRunner {
     }
   }
 
+  /**
+   * Executes the warmup phase to prepare the system for load testing.
+   *
+   * <p>The warmup phase helps to:
+   *
+   * <ul>
+   *   <li>Initialize connection pools
+   *   <li>Warm up JVMs and caches
+   *   <li>Identify initial system issues
+   *   <li>Establish baseline performance
+   * </ul>
+   *
+   * <p>During warmup, requests are sent at a low rate (1 req/sec) and their results are not
+   * included in the final test metrics.
+   *
+   * @param warmupDuration the duration of the warmup phase
+   * @throws InterruptedException if the warmup is interrupted
+   */
   private void executeWarmup(Duration warmupDuration) {
     log.info("Starting warmup phase for {} seconds", warmupDuration.getSeconds());
 
@@ -388,6 +544,24 @@ public class LoadTestExecutionRunner {
     log.info("Warmup phase completed");
   }
 
+  /**
+   * Executes a single HTTP request and records the results.
+   *
+   * <p>This method:
+   *
+   * <ul>
+   *   <li>Increments active request counter
+   *   <li>Executes the HTTP request using the configured client
+   *   <li>Measures response time
+   *   <li>Records success/failure metrics (unless warmup)
+   *   <li>Handles exceptions and error recording
+   *   <li>Manages concurrency control (if provided)
+   * </ul>
+   *
+   * @param concurrencyLimiter semaphore for controlling maximum concurrent requests (can be null)
+   * @param userId the user ID for CLOSED model tracking (-1 for OPEN model or warmup)
+   * @param isWarmup true if this is a warmup request (metrics won't be recorded)
+   */
   private void executeRequest(Semaphore concurrencyLimiter, int userId, boolean isWarmup) {
     try {
       metrics.incrementActiveRequests();
@@ -435,6 +609,28 @@ public class LoadTestExecutionRunner {
     }
   }
 
+  /**
+   * Starts the SLA (Service Level Agreement) monitoring system.
+   *
+   * <p>The SLA monitor runs on a separate scheduled thread and periodically checks if the current
+   * test metrics violate any configured SLAs. Supported SLA metrics include:
+   *
+   * <ul>
+   *   <li>Error rate percentage
+   *   <li>P95 response time
+   *   <li>P99 response time
+   * </ul>
+   *
+   * <p>When violations are detected:
+   *
+   * <ul>
+   *   <li>Violation details are logged
+   *   <li>Metrics are recorded
+   *   <li>Configured action is taken (CONTINUE or STOP)
+   * </ul>
+   *
+   * <p>If no SLA configuration is present, monitoring is skipped.
+   */
   private void startSLAMonitoring() {
     if (testPlanSpec.getExecution().getGlobalSla() == null) {
       return;
@@ -487,6 +683,14 @@ public class LoadTestExecutionRunner {
         TimeUnit.SECONDS); // Check SLA every 5 seconds
   }
 
+  /**
+   * Schedules automatic test termination when the hold time expires.
+   *
+   * <p>This is used in CLOSED workload model to ensure the test doesn't run indefinitely if users
+   * complete their iterations quickly.
+   *
+   * @param testEndTime the absolute time when the test should be terminated
+   */
   private void scheduleHoldTimeTermination(Instant testEndTime) {
     long delayMs = Duration.between(Instant.now(), testEndTime).toMillis();
 
@@ -500,6 +704,14 @@ public class LoadTestExecutionRunner {
         TimeUnit.MILLISECONDS);
   }
 
+  /**
+   * Schedules automatic test termination after the specified duration.
+   *
+   * <p>This is used in OPEN workload model to terminate the test after the configured duration
+   * regardless of request completion status.
+   *
+   * @param testDuration the duration after which the test should be terminated
+   */
   private void scheduleDurationTermination(Duration testDuration) {
     schedulerService.schedule(
         () -> {
@@ -511,6 +723,15 @@ public class LoadTestExecutionRunner {
         TimeUnit.MILLISECONDS);
   }
 
+  /**
+   * Terminates the load test with the specified reason.
+   *
+   * <p>This method is thread-safe and ensures that termination only happens once. It sets the
+   * appropriate flags to stop all running threads and records the termination reason for reporting.
+   *
+   * @param reason a descriptive reason for the termination (e.g., "SLA_VIOLATION",
+   *     "DURATION_COMPLETED")
+   */
   private void terminateTest(String reason) {
     if (testRunning.compareAndSet(true, false)) {
       terminationReason.set(reason);
@@ -519,6 +740,19 @@ public class LoadTestExecutionRunner {
     }
   }
 
+  /**
+   * Waits for the test to complete by monitoring the completion flag.
+   *
+   * <p>This method blocks the calling thread until either:
+   *
+   * <ul>
+   *   <li>The test completes normally
+   *   <li>The test is terminated due to SLA violations or other reasons
+   *   <li>The thread is interrupted
+   * </ul>
+   *
+   * @throws InterruptedException if the waiting thread is interrupted
+   */
   private void waitForTestCompletion() {
     try {
       while (!testCompleted.get()) {
@@ -529,6 +763,15 @@ public class LoadTestExecutionRunner {
     }
   }
 
+  /**
+   * Waits for all active requests to complete with a specified timeout.
+   *
+   * <p>This method is called during test shutdown to allow in-flight requests to complete
+   * gracefully before forcing termination. It prevents data loss and ensures accurate metrics
+   * collection.
+   *
+   * @param timeout the maximum time to wait for requests to complete
+   */
   private void waitForActiveRequestsToComplete(Duration timeout) {
     Instant deadline = Instant.now().plus(timeout);
 
@@ -546,6 +789,21 @@ public class LoadTestExecutionRunner {
     }
   }
 
+  /**
+   * Parses a duration string into a Duration object.
+   *
+   * <p>Supported formats:
+   *
+   * <ul>
+   *   <li>"30s" - 30 seconds
+   *   <li>"5m" - 5 minutes
+   *   <li>"120" - 120 seconds (default unit)
+   * </ul>
+   *
+   * @param duration the duration string to parse
+   * @return a Duration object, or Duration.ZERO if input is null/empty
+   * @throws NumberFormatException if the duration string is not a valid number
+   */
   private Duration parseDuration(String duration) {
     if (duration == null || duration.trim().isEmpty()) {
       return Duration.ZERO;
@@ -562,6 +820,20 @@ public class LoadTestExecutionRunner {
     }
   }
 
+  /**
+   * Calculates the maximum number of threads needed for the test execution.
+   *
+   * <p>The calculation depends on the workload model:
+   *
+   * <ul>
+   *   <li><b>CLOSED:</b> Number of users + overhead for management threads
+   *   <li><b>OPEN:</b> Maximum concurrent requests + overhead for management threads
+   * </ul>
+   *
+   * <p>The overhead accounts for scheduler threads, metrics collection, and other background tasks.
+   *
+   * @return the maximum number of threads required for execution
+   */
   private int calculateMaxThreads() {
     var loadModel = testPlanSpec.getExecution().getLoadModel();
     if (loadModel.getType() == TestPlanSpec.WorkLoadModel.CLOSED) {
@@ -571,6 +843,24 @@ public class LoadTestExecutionRunner {
     }
   }
 
+  /**
+   * Generates a comprehensive test report containing all metrics and analysis.
+   *
+   * <p>The report includes:
+   *
+   * <ul>
+   *   <li>Response time statistics (min, max, average, percentiles)
+   *   <li>Throughput metrics (average, peak)
+   *   <li>Error analysis and status code distribution
+   *   <li>SLA violation summary
+   *   <li>User metrics (for CLOSED model)
+   *   <li>Time window analysis
+   *   <li>Test metadata and termination reason
+   * </ul>
+   *
+   * @param testEndTime the time when the test completed
+   * @return a comprehensive test report with all collected metrics
+   */
   private ComprehensiveTestReport generateFinalReport(Instant testEndTime) {
     log.info("Generating comprehensive test report...");
 
@@ -583,6 +873,24 @@ public class LoadTestExecutionRunner {
     return report;
   }
 
+  /**
+   * Logs a detailed test summary to the console for immediate visibility.
+   *
+   * <p>The summary includes key metrics formatted for easy reading:
+   *
+   * <ul>
+   *   <li>Test metadata (ID, duration, termination reason)
+   *   <li>Request statistics (total, success rate, error rate)
+   *   <li>Response time metrics (average, percentiles, min/max)
+   *   <li>Throughput statistics
+   *   <li>Status code distribution
+   *   <li>SLA violations (if any)
+   *   <li>User metrics for CLOSED model
+   *   <li>Window analysis summary
+   * </ul>
+   *
+   * @param report the comprehensive test report to summarize
+   */
   private void logTestSummary(ComprehensiveTestReport report) {
     StringBuilder summary = new StringBuilder();
     summary.append("\n");
@@ -684,7 +992,25 @@ public class LoadTestExecutionRunner {
     log.info(summary.toString());
   }
 
-  // FIXED: Improved cleanup with proper exception handling
+  /**
+   * Performs comprehensive cleanup of all resources used during test execution.
+   *
+   * <p>This method ensures proper shutdown in the following order:
+   *
+   * <ol>
+   *   <li>Stop test execution flag
+   *   <li>Shutdown metrics system (to capture final window)
+   *   <li>Shutdown scheduler service (stops creating new tasks)
+   *   <li>Shutdown main executor service (waits for user threads)
+   *   <li>Close HTTP client and connection pools
+   * </ol>
+   *
+   * <p>Each shutdown step has proper error handling to ensure cleanup continues even if individual
+   * components fail to shutdown gracefully.
+   *
+   * <p>This method should always be called after test execution, preferably in a finally block to
+   * ensure resources are released regardless of how the test terminates.
+   */
   public void cleanup() {
     log.info("Starting load test cleanup...");
 
@@ -718,7 +1044,26 @@ public class LoadTestExecutionRunner {
     }
   }
 
-  // FIXED: Better executor service shutdown with proper interrupt handling
+  /**
+   * Shuts down an executor service gracefully with proper timeout handling.
+   *
+   * <p>The shutdown process follows best practices:
+   *
+   * <ol>
+   *   <li>Call shutdown() to stop accepting new tasks
+   *   <li>Wait for existing tasks to complete (up to timeout)
+   *   <li>If timeout exceeded, call shutdownNow() to interrupt tasks
+   *   <li>Wait briefly for interrupted tasks to respond
+   *   <li>Log warnings if forceful shutdown was required
+   * </ol>
+   *
+   * <p>This method handles InterruptedException properly by preserving the interrupt status and
+   * ensuring forceful shutdown occurs.
+   *
+   * @param name descriptive name for the executor (used in logging)
+   * @param executor the executor service to shutdown
+   * @param timeoutSeconds maximum time to wait for graceful shutdown
+   */
   private void shutdownExecutorService(String name, ExecutorService executor, int timeoutSeconds) {
     try {
       log.debug("Shutting down {} executor service...", name);
