@@ -1,0 +1,115 @@
+plugins {
+    id 'java'
+    id 'com.diffplug.spotless' version '6.23.3'
+}
+
+group = 'org.example'
+version = '1.0-SNAPSHOT'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    compileOnly 'org.projectlombok:lombok:1.18.30'
+    annotationProcessor 'org.projectlombok:lombok:1.18.30'
+
+    // SLF4J API
+    implementation 'org.slf4j:slf4j-api:2.0.9'
+
+    // Log4j2 implementation
+    implementation 'org.apache.logging.log4j:log4j-core:2.21.1'
+    implementation 'org.apache.logging.log4j:log4j-slf4j2-impl:2.21.1'
+
+    // Jackson dependencies
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.16.1'
+    implementation 'com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.16.1'
+
+    // Test dependencies
+    testImplementation platform('org.junit:junit-bom:5.10.0')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+
+    // Mockito dependencies
+    testImplementation 'org.mockito:mockito-core:5.8.0'
+    testImplementation 'org.mockito:mockito-junit-jupiter:5.8.0'
+    testImplementation 'org.mockito:mockito-inline:5.2.0'
+
+    // AssertJ for better assertions (optional but recommended)
+    testImplementation 'org.assertj:assertj-core:3.24.2'
+
+    testImplementation 'org.awaitility:awaitility:4.2.0'
+
+}
+
+spotless {
+    java {
+        target 'src/**/*.java'
+        googleJavaFormat('1.19.1')
+        removeUnusedImports()
+        trimTrailingWhitespace()
+        endWithNewline()
+    }
+
+    groovy {
+        target 'src/**/*.groovy', '*.gradle'
+        greclipse()
+        indentWithSpaces(4)
+        trimTrailingWhitespace()
+        endWithNewline()
+    }
+}
+
+// Add this to your build.gradle file to fix the Java agent warnings
+
+test {
+    useJUnitPlatform()
+
+    // Fix Java agent warnings for newer JDK versions
+    jvmArgs = [
+            '-XX:+EnableDynamicAgentLoading',  // Allow dynamic agent loading
+            '-Djdk.instrument.traceUsage=false',  // Disable instrumentation tracing
+            '--add-opens=java.base/java.lang=ALL-UNNAMED',  // Required for Mockito
+            '--add-opens=java.base/java.util=ALL-UNNAMED'   // Required for Mockito
+    ]
+
+    // Increase test timeouts for load testing
+    systemProperty 'junit.jupiter.execution.timeout.default', '60s'
+    systemProperty 'junit.jupiter.execution.timeout.testable.method.default', '60s'
+
+    // Set heap size for load tests
+    minHeapSize = "512m"
+    maxHeapSize = "1g"
+
+    // Configure test output
+    testLogging {
+        events "passed", "skipped", "failed"
+        exceptionFormat "full"
+        showStackTraces = true
+        showCauses = true
+        showExceptions = true
+    }
+
+    // Fail fast on first test failure for faster feedback
+    failFast = false
+
+    // Run tests in parallel for faster execution
+    maxParallelForks = Runtime.runtime.availableProcessors().intdiv(2) ?: 1
+}
+
+// Separate task for integration tests only
+task integrationTest(type: Test) {
+    useJUnitPlatform {
+        includeTags 'integration'
+    }
+    description = 'Runs integration tests only'
+    group = 'verification'
+}
+
+// Separate task for unit tests only
+task unitTest(type: Test) {
+    useJUnitPlatform {
+        excludeTags 'integration'
+    }
+    description = 'Runs unit tests only'
+    group = 'verification'
+}
