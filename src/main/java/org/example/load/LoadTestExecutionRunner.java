@@ -1,5 +1,7 @@
 package org.example.load;
 
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.util.concurrent.RateLimiter;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
@@ -18,62 +20,47 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Enhanced Load Test Execution Runner that manages and executes load tests with proper resource
- * cleanup and exception handling.
+ * Enhanced Load Test Execution Runner that manages and executes load tests for restful APIs.
  *
- * <p>This class supports both CLOSED and OPEN workload models:
- *
- * <ul>
- *   <li><b>CLOSED Model:</b> Fixed number of virtual users, each performing a specified number of
- *       iterations
- *   <li><b>OPEN Model:</b> Arrival rate-based testing with maximum concurrency limits
- * </ul>
- *
- * <p>Features include:
+ * <p>Performance optimizations include:
  *
  * <ul>
- *   <li>Multi-phase test execution (warmup, ramp-up, hold, completion)
- *   <li>Real-time SLA monitoring and violation handling
- *   <li>Comprehensive metrics collection and reporting
- *   <li>Thread-safe execution with proper resource management
- *   <li>Configurable think times and back-pressure handling
+ *   <li>Dynamic thread pool sizing with back-pressure handling
+ *   <li>CountDownLatch for efficient synchronization instead of busy-waiting
+ *   <li>Token bucket rate limiting for smooth request pacing
+ *   <li>Optimized scheduler usage with fixed delay scheduling
+ *   <li>ThreadLocalRandom for efficient think time generation
  * </ul>
  *
- * <p>Thread Safety: This class is thread-safe and uses concurrent data structures and atomic
- * operations for state management.
- *
- * @author Load Testing Framework
- * @version 1.0
- * @since 1.0
+ * @author Maher
  */
 public class LoadTestExecutionRunner {
+
   private static final Logger log = LoggerFactory.getLogger(LoadTestExecutionRunner.class);
+  private static final int SCHEDULER_THREAD_MULTIPLIER = 2;
+  private static final int QUEUE_CAPACITY = 1000;
+  private static final int MAX_EXECUTOR_MULTIPLIER = 2;
 
   private final TestPlanSpec testPlanSpec;
   private final LoadHttpClient httpClient;
-  private final ExecutorService executorService;
+  private final ThreadPoolExecutor executorService;
   private final ScheduledExecutorService schedulerService;
 
-  // Test state management
   private final AtomicBoolean testRunning = new AtomicBoolean(false);
-  private final AtomicBoolean testCompleted = new AtomicBoolean(false);
   private final AtomicReference<String> terminationReason = new AtomicReference<>();
 
-  // Enhanced metrics system
+  // Efficient synchronization primitives
+  private final CountDownLatch testCompletionLatch = new CountDownLatch(1);
+  private CountDownLatch userCompletionLatch;
+
   private final TestMetrics metrics;
   private final SLAMonitor slaMonitor;
 
+  // Rate limiting for OPEN model
+  private RateLimiter rateLimiter;
+
   /**
    * Constructs a new LoadTestExecutionRunner with the specified test plan.
-   *
-   * <p>Initializes all required components including:
-   *
-   * <ul>
-   *   <li>HTTP client configured with global settings
-   *   <li>Thread pools sized based on workload model
-   *   <li>Metrics collection system
-   *   <li>SLA monitoring system
-   * </ul>
    *
    * @param testPlanSpec the test plan specification containing all test configuration
    * @throws IllegalArgumentException if testPlanSpec is null or invalid
@@ -82,19 +69,17 @@ public class LoadTestExecutionRunner {
   public LoadTestExecutionRunner(TestPlanSpec testPlanSpec) {
     this.testPlanSpec = testPlanSpec;
 
-    // Initialize HTTP client with global config
     var globalConfig = testPlanSpec.getTestSpec().getGlobalConfig();
     this.httpClient =
         new LoadHttpClient(
             globalConfig.getBaseUrl(),
-            globalConfig.getTimeouts().getConnectionTimeoutMs() / 1000, // convert to seconds
+            globalConfig.getTimeouts().getConnectionTimeoutMs() / 1000,
             globalConfig.getHeaders(),
             globalConfig.getVars());
 
-    // Initialize thread pools
-    int maxThreads = calculateMaxThreads();
-    this.executorService = Executors.newFixedThreadPool(maxThreads);
-    this.schedulerService = Executors.newScheduledThreadPool(6); // Increased for metrics
+    // Create optimized thread pools
+    this.executorService = createMainExecutor();
+    this.schedulerService = createSchedulerExecutor();
 
     // Initialize enhanced metrics system
     this.metrics =
@@ -102,9 +87,55 @@ public class LoadTestExecutionRunner {
     this.slaMonitor = new SLAMonitor(testPlanSpec.getExecution().getGlobalSla(), metrics);
 
     log.info(
-        "LoadTestExecutionRunner initialized for {} model with {} max threads",
+        "LoadTestExecutionRunner initialized for {} model with core={}, max={} threads",
         testPlanSpec.getExecution().getLoadModel().getType(),
-        maxThreads);
+        executorService.getCorePoolSize(),
+        executorService.getMaximumPoolSize());
+  }
+
+  /**
+   * Creates an optimized main executor with dynamic sizing and back-pressure handling.
+   *
+   * @return configured ThreadPoolExecutor
+   */
+  private ThreadPoolExecutor createMainExecutor() {
+    var loadModel = testPlanSpec.getExecution().getLoadModel();
+    int baseThreads = calculateBaseThreads(loadModel);
+    int maxThreads = Math.max(baseThreads * MAX_EXECUTOR_MULTIPLIER, 50);
+
+    return new ThreadPoolExecutor(
+        baseThreads, // core pool size
+        maxThreads, // maximum pool size
+        60L,
+        TimeUnit.SECONDS, // keep-alive time
+        new LinkedBlockingQueue<>(QUEUE_CAPACITY), // bounded queue
+        new ThreadPoolExecutor.CallerRunsPolicy() // back-pressure policy
+        );
+  }
+
+  /**
+   * Creates an optimized scheduler executor based on CPU cores.
+   *
+   * @return configured ScheduledExecutorService
+   */
+  private ScheduledExecutorService createSchedulerExecutor() {
+    int schedulerThreads =
+        Math.max(3, Runtime.getRuntime().availableProcessors() / SCHEDULER_THREAD_MULTIPLIER);
+    return Executors.newScheduledThreadPool(schedulerThreads);
+  }
+
+  /**
+   * Calculates base thread count without overhead (since scheduler has separate pool).
+   *
+   * @param loadModel the load model configuration
+   * @return base thread count needed
+   */
+  private int calculateBaseThreads(TestPlanSpec.LoadModel loadModel) {
+    if (loadModel.getType() == TestPlanSpec.WorkLoadModel.CLOSED) {
+      return loadModel.getUsers() + 3;
+    } else {
+      return loadModel.getMaxConcurrent() + 3;
+    }
   }
 
   /**
@@ -120,14 +151,7 @@ public class LoadTestExecutionRunner {
    *   <li>Completion - when all iterations are done or hold time expires
    * </ol>
    *
-   * <p>Each user thread:
-   *
-   * <ul>
-   *   <li>Waits for its designated start delay (ramp-up)
-   *   <li>Performs all assigned iterations
-   *   <li>Applies think time between requests if configured
-   *   <li>Stops when iterations complete or hold time expires
-   * </ul>
+   * <p>Uses CountDownLatch for efficient user completion tracking instead of collecting futures.
    *
    * @throws RuntimeException if execution fails or is interrupted
    */
@@ -139,7 +163,10 @@ public class LoadTestExecutionRunner {
     Duration holdDuration = parseDuration(loadModel.getHoldFor());
 
     int totalUsers = loadModel.getUsers();
-    int iterationsPerUser = loadModel.getIterations(); // FIXED: Each user does ALL iterations
+    int iterationsPerUser = loadModel.getIterations();
+
+    // Initialize user completion latch
+    userCompletionLatch = new CountDownLatch(totalUsers);
 
     log.info(
         "Executing CLOSED workload: {} users, {} iterations per user (total: {}), ramp-up: {}s, hold: {}s",
@@ -176,42 +203,33 @@ public class LoadTestExecutionRunner {
     // Schedule hold time termination
     scheduleHoldTimeTermination(testEndTime);
 
-    // Create user tasks
-    List<CompletableFuture<Void>> userTasks = new ArrayList<>();
-
+    // Start user threads without collecting futures (memory optimization)
     for (int userId = 0; userId < totalUsers; userId++) {
       long userStartDelay = (userId * rampUpDuration.toMillis()) / totalUsers;
 
-      // Make variables effectively final for lambda
       final int finalUserId = userId;
       final long finalUserStartDelay = userStartDelay;
-      final int finalIterationsPerUser = iterationsPerUser; // Each user gets ALL iterations
+      final int finalIterationsPerUser = iterationsPerUser;
 
-      CompletableFuture<Void> userTask =
-          CompletableFuture.runAsync(
-              () -> {
-                executeUserThread(
-                    finalUserId, finalUserStartDelay, finalIterationsPerUser, testEndTime);
-              },
-              executorService);
-
-      userTasks.add(userTask);
+      executorService.submit(
+          () -> {
+            executeUserThread(
+                finalUserId, finalUserStartDelay, finalIterationsPerUser, testEndTime);
+          });
     }
 
-    // Wait for all users to complete or test to be terminated
-    CompletableFuture<Void> allUserTasks =
-        CompletableFuture.allOf(userTasks.toArray(new CompletableFuture[0]));
-
+    // Wait for all users to complete efficiently
     try {
-      allUserTasks.get();
+      userCompletionLatch.await();
 
       // If we reach here, all iterations completed before hold time
       if (testRunning.get()) {
         terminateTest("ALL_ITERATIONS_COMPLETED");
       }
-    } catch (Exception e) {
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
       if (testRunning.get()) {
-        log.warn("User tasks interrupted: {}", e.getMessage());
+        log.warn("User completion wait interrupted");
       }
     }
   }
@@ -225,16 +243,15 @@ public class LoadTestExecutionRunner {
    *   <li>Waits for the designated start delay (ramp-up timing)
    *   <li>Registers user start with metrics
    *   <li>Performs the specified number of iterations
-   *   <li>Applies think time between requests
+   *   <li>Applies optimized think time between requests
    *   <li>Stops on hold time expiration or test termination
-   *   <li>Registers user completion with metrics
+   *   <li>Registers user completion with metrics and signals completion latch
    * </ul>
    *
    * @param userId the unique identifier for this user thread
    * @param startDelay the delay in milliseconds before this user should start
    * @param iterations the number of iterations this user should perform
    * @param testEndTime the absolute time when the test should end (hold time expiration)
-   * @throws InterruptedException if the thread is interrupted during execution
    */
   private void executeUserThread(int userId, long startDelay, int iterations, Instant testEndTime) {
     try {
@@ -260,7 +277,7 @@ public class LoadTestExecutionRunner {
         executeRequest(null, userId, false);
         completedIterations++;
 
-        // Apply think time between requests (except for last iteration)
+        // Apply optimized think time between requests (except for last iteration)
         if (i < iterations - 1) {
           applyThinkTime();
         }
@@ -274,18 +291,19 @@ public class LoadTestExecutionRunner {
       log.debug("User {} interrupted", userId);
     } finally {
       metrics.userCompleted(userId);
+      userCompletionLatch.countDown(); // Signal completion
       log.debug("User {} finished", userId);
     }
   }
 
   /**
-   * Applies think time between requests as specified in the test configuration.
+   * Applies optimized think time between requests using ThreadLocalRandom.
    *
    * <p>Think time simulates the delay a real user would have between actions. Supports two modes:
    *
    * <ul>
    *   <li><b>FIXED:</b> Always uses the minimum value
-   *   <li><b>RANDOM:</b> Random delay between min and max values
+   *   <li><b>RANDOM:</b> Random delay between min and max values using ThreadLocalRandom
    * </ul>
    *
    * @throws InterruptedException if the thread is interrupted during the delay
@@ -293,19 +311,16 @@ public class LoadTestExecutionRunner {
   private void applyThinkTime() {
     var thinkTime = testPlanSpec.getExecution().getThinkTime();
     if (thinkTime == null) return;
-
     try {
       int delay;
       if (thinkTime.getType() == TestPlanSpec.ThinkTimeType.FIXED) {
         delay = thinkTime.getMin();
       } else {
-        // RANDOM think time between min and max
-        Random random = new Random();
-        delay = thinkTime.getMin() + random.nextInt(thinkTime.getMax() - thinkTime.getMin() + 1);
+        delay = ThreadLocalRandom.current().nextInt(thinkTime.getMin(), thinkTime.getMax() + 1);
       }
 
       if (delay > 0) {
-        log.trace("Applying think time: {}ms", delay);
+        log.debug("Applying think time: {} ms", delay);
         Thread.sleep(delay);
       }
     } catch (InterruptedException e) {
@@ -322,7 +337,7 @@ public class LoadTestExecutionRunner {
    *   <li>Initializes test state and metrics
    *   <li>Starts SLA monitoring
    *   <li>Delegates to the appropriate workload execution method
-   *   <li>Waits for test completion
+   *   <li>Waits for test completion using CountDownLatch
    *   <li>Generates and returns a comprehensive test report
    *   <li>Ensures proper cleanup regardless of success or failure
    * </ol>
@@ -354,7 +369,7 @@ public class LoadTestExecutionRunner {
               executeOpenWorkload();
             }
 
-            // Wait for completion or termination
+            // Wait for completion using efficient CountDownLatch
             waitForTestCompletion();
 
             Instant testEndTime = Instant.now();
@@ -383,13 +398,13 @@ public class LoadTestExecutionRunner {
   }
 
   /**
-   * Executes an OPEN workload model based on arrival rate and maximum concurrency.
+   * Executes an OPEN workload model using token bucket rate limiting for smooth request pacing.
    *
    * <p>The OPEN model simulates real-world traffic patterns where requests arrive at a specified
-   * rate regardless of response times. Key characteristics:
+   * rate regardless of response times. Key improvements:
    *
    * <ul>
-   *   <li>Fixed arrival rate (requests per second)
+   *   <li>Token bucket rate limiting for precise, smooth request pacing
    *   <li>Maximum concurrency limit to prevent resource exhaustion
    *   <li>Back-pressure handling when concurrency limit is reached
    *   <li>Duration-based execution (not iteration-based)
@@ -399,7 +414,7 @@ public class LoadTestExecutionRunner {
    *
    * <ol>
    *   <li>Optional warmup phase
-   *   <li>Main execution at target arrival rate
+   *   <li>Main execution at target arrival rate using rate limiter
    *   <li>Graceful completion of remaining requests
    * </ol>
    *
@@ -420,6 +435,9 @@ public class LoadTestExecutionRunner {
         maxConcurrent,
         testDuration.getSeconds());
 
+    // Initialize rate limiter for smooth request pacing
+    rateLimiter = RateLimiter.create(arrivalRate);
+
     // Phase 1: Warmup
     if (warmupDuration.toMillis() > 0) {
       metrics.setPhase(TestPhase.WARMUP);
@@ -429,59 +447,36 @@ public class LoadTestExecutionRunner {
     if (!testRunning.get()) return;
 
     // Phase 2: Main execution
-    metrics.setPhase(TestPhase.HOLD); // OPEN model goes straight to HOLD
+    metrics.setPhase(TestPhase.HOLD);
     Instant testEndTime = Instant.now().plus(testDuration);
 
     // Schedule duration-based termination
     scheduleDurationTermination(testDuration);
 
-    // Rate controller with semaphore for concurrency limiting
+    // Concurrency control
     Semaphore concurrencyLimiter = new Semaphore(maxConcurrent);
-    long intervalMicros = 1_000_000L / arrivalRate; // microseconds between requests
 
-    ScheduledFuture<?> rateTask =
-        schedulerService.scheduleAtFixedRate(
-            () -> {
-              if (!testRunning.get() || Instant.now().isAfter(testEndTime)) {
-                return;
-              }
+    // Main request generation loop with rate limiting
+    while (testRunning.get() && Instant.now().isBefore(testEndTime)) {
+      // Acquire rate limit permit (blocks if necessary for smooth pacing)
+      rateLimiter.acquire();
 
-              if (concurrencyLimiter.tryAcquire()) {
-                metrics.incrementScheduledRequests();
-
-                CompletableFuture<Void> requestTask =
-                    CompletableFuture.runAsync(
-                        () -> {
-                          executeRequest(concurrencyLimiter, -1, false); // -1 = no specific user
-                        },
-                        executorService);
-
-                // Handle request completion
-                requestTask.whenComplete(
-                    (result, throwable) -> {
-                      if (throwable != null) {
-                        log.debug("Request execution failed: {}", throwable.getMessage());
-                      }
-                    });
-              } else {
-                // Back-pressure: too many concurrent requests
-                metrics.incrementBackPressureEvents();
-                log.debug("Back-pressure: max concurrent requests reached");
-              }
-            },
-            0,
-            intervalMicros,
-            TimeUnit.MICROSECONDS);
-
-    // Wait for test completion
-    try {
-      while (testRunning.get() && Instant.now().isBefore(testEndTime)) {
-        Thread.sleep(100);
+      if (!testRunning.get() || Instant.now().isAfter(testEndTime)) {
+        break;
       }
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-    } finally {
-      rateTask.cancel(false);
+
+      if (concurrencyLimiter.tryAcquire()) {
+        metrics.incrementScheduledRequests();
+
+        executorService.submit(
+            () -> {
+              executeRequest(concurrencyLimiter, -1, false);
+            });
+      } else {
+        // Back-pressure: too many concurrent requests
+        metrics.incrementBackPressureEvents();
+        log.debug("Back-pressure: max concurrent requests reached");
+      }
     }
 
     // Wait for remaining requests to complete
@@ -504,11 +499,10 @@ public class LoadTestExecutionRunner {
    *   <li>Establish baseline performance
    * </ul>
    *
-   * <p>During warmup, requests are sent at a low rate (1 req/sec) and their results are not
-   * included in the final test metrics.
+   * <p>During warmup, requests are sent at a low rate (1 req/sec) using scheduleWithFixedDelay for
+   * better task scheduling and their results are not included in the final test metrics.
    *
    * @param warmupDuration the duration of the warmup phase
-   * @throws InterruptedException if the warmup is interrupted
    */
   private void executeWarmup(Duration warmupDuration) {
     log.info("Starting warmup phase for {} seconds", warmupDuration.getSeconds());
@@ -516,7 +510,7 @@ public class LoadTestExecutionRunner {
     Instant warmupEnd = Instant.now().plus(warmupDuration);
 
     ScheduledFuture<?> warmupTask =
-        schedulerService.scheduleAtFixedRate(
+        schedulerService.scheduleWithFixedDelay( // Changed from scheduleAtFixedRate
             () -> {
               if (!testRunning.get() || Instant.now().isAfter(warmupEnd)) {
                 return;
@@ -610,24 +604,10 @@ public class LoadTestExecutionRunner {
   }
 
   /**
-   * Starts the SLA (Service Level Agreement) monitoring system.
+   * Starts the SLA (Service Level Agreement) monitoring system using scheduleWithFixedDelay.
    *
    * <p>The SLA monitor runs on a separate scheduled thread and periodically checks if the current
-   * test metrics violate any configured SLAs. Supported SLA metrics include:
-   *
-   * <ul>
-   *   <li>Error rate percentage
-   *   <li>P95 response time
-   *   <li>P99 response time
-   * </ul>
-   *
-   * <p>When violations are detected:
-   *
-   * <ul>
-   *   <li>Violation details are logged
-   *   <li>Metrics are recorded
-   *   <li>Configured action is taken (CONTINUE or STOP)
-   * </ul>
+   * test metrics violate any configured SLAs. Uses scheduleWithFixedDelay to prevent task pile-up.
    *
    * <p>If no SLA configuration is present, monitoring is skipped.
    */
@@ -638,7 +618,7 @@ public class LoadTestExecutionRunner {
 
     log.info("Starting SLA monitoring");
 
-    schedulerService.scheduleAtFixedRate(
+    schedulerService.scheduleWithFixedDelay( // Changed from scheduleAtFixedRate
         () -> {
           if (!testRunning.get()) return;
 
@@ -680,7 +660,7 @@ public class LoadTestExecutionRunner {
         },
         5,
         5,
-        TimeUnit.SECONDS); // Check SLA every 5 seconds
+        TimeUnit.SECONDS); // Check SLA every 5 seconds with fixed delay
   }
 
   /**
@@ -727,21 +707,23 @@ public class LoadTestExecutionRunner {
    * Terminates the load test with the specified reason.
    *
    * <p>This method is thread-safe and ensures that termination only happens once. It sets the
-   * appropriate flags to stop all running threads and records the termination reason for reporting.
+   * appropriate flags to stop all running threads and signals the completion latch.
    *
    * @param reason a descriptive reason for the termination (e.g., "SLA_VIOLATION",
    *     "DURATION_COMPLETED")
    */
-  private void terminateTest(String reason) {
+  @VisibleForTesting
+  void terminateTest(String reason) {
     if (testRunning.compareAndSet(true, false)) {
-      terminationReason.set(reason);
-      testCompleted.set(true);
+      // Only set termination reason once
+      terminationReason.compareAndSet(null, reason);
+      testCompletionLatch.countDown(); // Signal completion efficiently
       log.info("Test termination initiated: {}", reason);
     }
   }
 
   /**
-   * Waits for the test to complete by monitoring the completion flag.
+   * Waits for the test to complete using CountDownLatch for efficient blocking.
    *
    * <p>This method blocks the calling thread until either:
    *
@@ -750,14 +732,10 @@ public class LoadTestExecutionRunner {
    *   <li>The test is terminated due to SLA violations or other reasons
    *   <li>The thread is interrupted
    * </ul>
-   *
-   * @throws InterruptedException if the waiting thread is interrupted
    */
   private void waitForTestCompletion() {
     try {
-      while (!testCompleted.get()) {
-        Thread.sleep(100);
-      }
+      testCompletionLatch.await(); // Efficient blocking without busy-waiting
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
     }
@@ -768,11 +746,12 @@ public class LoadTestExecutionRunner {
    *
    * <p>This method is called during test shutdown to allow in-flight requests to complete
    * gracefully before forcing termination. It prevents data loss and ensures accurate metrics
-   * collection.
+   * collection. Still uses polling but only for the final cleanup phase.
    *
    * @param timeout the maximum time to wait for requests to complete
    */
-  private void waitForActiveRequestsToComplete(Duration timeout) {
+  @VisibleForTesting
+  void waitForActiveRequestsToComplete(Duration timeout) {
     Instant deadline = Instant.now().plus(timeout);
 
     while (metrics.getActiveRequests().get() > 0 && Instant.now().isBefore(deadline)) {
@@ -804,7 +783,8 @@ public class LoadTestExecutionRunner {
    * @return a Duration object, or Duration.ZERO if input is null/empty
    * @throws NumberFormatException if the duration string is not a valid number
    */
-  private Duration parseDuration(String duration) {
+  @VisibleForTesting
+  Duration parseDuration(String duration) {
     if (duration == null || duration.trim().isEmpty()) {
       return Duration.ZERO;
     }
@@ -817,29 +797,6 @@ public class LoadTestExecutionRunner {
     } else {
       // Assume seconds if no unit specified
       return Duration.ofSeconds(Integer.parseInt(trimmed));
-    }
-  }
-
-  /**
-   * Calculates the maximum number of threads needed for the test execution.
-   *
-   * <p>The calculation depends on the workload model:
-   *
-   * <ul>
-   *   <li><b>CLOSED:</b> Number of users + overhead for management threads
-   *   <li><b>OPEN:</b> Maximum concurrent requests + overhead for management threads
-   * </ul>
-   *
-   * <p>The overhead accounts for scheduler threads, metrics collection, and other background tasks.
-   *
-   * @return the maximum number of threads required for execution
-   */
-  private int calculateMaxThreads() {
-    var loadModel = testPlanSpec.getExecution().getLoadModel();
-    if (loadModel.getType() == TestPlanSpec.WorkLoadModel.CLOSED) {
-      return loadModel.getUsers() + 10; // users + overhead
-    } else {
-      return loadModel.getMaxConcurrent() + 10; // max concurrent + overhead
     }
   }
 
@@ -867,129 +824,7 @@ public class LoadTestExecutionRunner {
     ComprehensiveTestReport report =
         metrics.generateComprehensiveReport(testEndTime, terminationReason.get());
 
-    // Log summary
-    logTestSummary(report);
-
     return report;
-  }
-
-  /**
-   * Logs a detailed test summary to the console for immediate visibility.
-   *
-   * <p>The summary includes key metrics formatted for easy reading:
-   *
-   * <ul>
-   *   <li>Test metadata (ID, duration, termination reason)
-   *   <li>Request statistics (total, success rate, error rate)
-   *   <li>Response time metrics (average, percentiles, min/max)
-   *   <li>Throughput statistics
-   *   <li>Status code distribution
-   *   <li>SLA violations (if any)
-   *   <li>User metrics for CLOSED model
-   *   <li>Window analysis summary
-   * </ul>
-   *
-   * @param report the comprehensive test report to summarize
-   */
-  private void logTestSummary(ComprehensiveTestReport report) {
-    StringBuilder summary = new StringBuilder();
-    summary.append("\n");
-    summary.append("================== LOAD TEST SUMMARY ==================\n");
-    summary.append(String.format("Test ID: %s\n", testPlanSpec.getTestSpec().getId()));
-    summary.append(String.format("Duration: %d seconds\n", report.getTotalDuration().getSeconds()));
-    summary.append(String.format("Termination: %s\n", report.getTerminationReason()));
-    summary.append(String.format("Final Phase: %s\n", report.getFinalPhase()));
-    summary.append("\n");
-
-    // Request metrics
-    summary.append("--- REQUEST METRICS ---\n");
-    summary.append(String.format("Total Requests: %d\n", report.getTotalRequests()));
-    summary.append(
-        String.format(
-            "Successful: %d (%.2f%%)\n",
-            report.getSuccessfulRequests(),
-            report.getTotalRequests() > 0
-                ? (double) report.getSuccessfulRequests() / report.getTotalRequests() * 100
-                : 0));
-    summary.append(
-        String.format("Failed: %d (%.2f%%)\n", report.getFailedRequests(), report.getErrorRate()));
-    summary.append("\n");
-
-    // Response time metrics
-    summary.append("--- RESPONSE TIME METRICS ---\n");
-    summary.append(String.format("Average: %.2f ms\n", report.getAverageResponseTime()));
-    summary.append(String.format("P50: %d ms\n", report.getP50ResponseTime()));
-    summary.append(String.format("P95: %d ms\n", report.getP95ResponseTime()));
-    summary.append(String.format("P99: %d ms\n", report.getP99ResponseTime()));
-    summary.append(String.format("Min: %d ms\n", report.getMinResponseTime()));
-    summary.append(String.format("Max: %d ms\n", report.getMaxResponseTime()));
-    summary.append("\n");
-
-    // Throughput
-    summary.append("--- THROUGHPUT ---\n");
-    summary.append(String.format("Average: %.2f req/sec\n", report.getAverageThroughput()));
-    summary.append(String.format("Peak: %.2f req/sec\n", report.getPeakThroughput()));
-    summary.append("\n");
-
-    // Status codes
-    if (!report.getStatusCodeDistribution().isEmpty()) {
-      summary.append("--- STATUS CODE DISTRIBUTION ---\n");
-      report.getStatusCodeDistribution().entrySet().stream()
-          .sorted(Map.Entry.comparingByKey())
-          .forEach(
-              entry ->
-                  summary.append(
-                      String.format("%d: %d requests\n", entry.getKey(), entry.getValue())));
-      summary.append("\n");
-    }
-
-    // SLA violations
-    if (report.getSlaViolationSummary() != null
-        && report.getSlaViolationSummary().getTotalViolations() > 0) {
-      summary.append("--- SLA VIOLATIONS ---\n");
-      summary.append(
-          String.format(
-              "Total Violations: %d\n", report.getSlaViolationSummary().getTotalViolations()));
-      report
-          .getSlaViolationSummary()
-          .getViolationsByType()
-          .forEach(
-              (type, count) -> summary.append(String.format("%s: %d violations\n", type, count)));
-      summary.append("\n");
-    }
-
-    // User metrics for CLOSED model
-    if (report.getUserMetricsSummary() != null) {
-      var userSummary = report.getUserMetricsSummary();
-      summary.append("--- USER METRICS (CLOSED MODEL) ---\n");
-      summary.append(String.format("Total Users: %d\n", userSummary.getTotalUsers()));
-      summary.append(String.format("Max Concurrent: %d\n", userSummary.getMaxConcurrentUsers()));
-      summary.append("\n");
-    }
-
-    // Window analysis
-    if (report.getWindowAnalysis() != null) {
-      var windowAnalysis = report.getWindowAnalysis();
-      summary.append("--- WINDOW ANALYSIS ---\n");
-      summary.append(String.format("Total Windows: %d\n", windowAnalysis.getTotalWindows()));
-      summary.append(
-          String.format(
-              "Throughput: Avg=%.2f, Max=%.2f req/sec\n",
-              windowAnalysis.getThroughputStats().getAverage(),
-              windowAnalysis.getThroughputStats().getMax()));
-      if (windowAnalysis.getResponseTimeStats().getCount() > 0) {
-        summary.append(
-            String.format(
-                "Response Time: Avg=%.2f, Max=%.2f ms\n",
-                windowAnalysis.getResponseTimeStats().getAverage(),
-                windowAnalysis.getResponseTimeStats().getMax()));
-      }
-      summary.append("\n");
-    }
-
-    summary.append("======================================================\n");
-
-    log.info(summary.toString());
   }
 
   /**

@@ -6,7 +6,7 @@ import lombok.Data;
 
 @Data
 @Builder
-class ErrorSummary {
+public class ErrorSummary {
   private final long totalErrors;
   private final Map<String, Long> errorsByType;
   private final Map<String, Long> errorsByMessage;

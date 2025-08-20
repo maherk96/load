@@ -7,7 +7,7 @@ import lombok.Data;
 
 @Data
 @Builder
-class UserPerformance {
+public class UserPerformance {
   private final int userId;
   private final long requestCount;
   private final long errorCount;

@@ -77,10 +77,10 @@ public class Main {
     TestPlanSpec read = JsonUtil.read(temp, TestPlanSpec.class);
     TestPlanSpec.LoadModel loadModel = read.getExecution().getLoadModel();
     loadModel.setType(TestPlanSpec.WorkLoadModel.CLOSED);
-    loadModel.setIterations(100);
+    loadModel.setIterations(200);
     loadModel.setHoldFor("1m");
-    loadModel.setUsers(100);
-    loadModel.setRampUp("60");
+    loadModel.setUsers(10);
+    loadModel.setRampUp("20s");
     loadModel.setWarmup("5s");
     LoadTestExecutionRunner runner = new LoadTestExecutionRunner(read);
     CompletableFuture<ComprehensiveTestReport> execute = runner.execute();

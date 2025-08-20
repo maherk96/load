@@ -38,6 +38,8 @@ dependencies {
     testImplementation 'org.assertj:assertj-core:3.24.2'
 
     testImplementation 'org.awaitility:awaitility:4.2.0'
+    // https://mvnrepository.com/artifact/com.google.guava/guava
+    implementation("com.google.guava:guava:33.4.8-jre")
 }
 
 spotless {

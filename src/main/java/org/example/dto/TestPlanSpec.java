@@ -37,18 +37,18 @@ public class TestPlanSpec {
 
   @Data
   public static class Request {
-    private HttpMethod method; // ✅ enum now
+    private HttpMethod method;
     private String path;
     private Map<String, String> headers;
     private Map<String, String> query;
-    private Object body; // null, String, or object
+    private Object body;
   }
 
   @Data
   public static class Execution {
     private ThinkTime thinkTime;
     private LoadModel loadModel;
-    private SLA globalSla; // global SLA
+    private SLA globalSla;
   }
 
   @Data
@@ -59,8 +59,8 @@ public class TestPlanSpec {
   }
 
   public enum ThinkTimeType {
-    FIXED, // always same delay
-    RANDOM, // random between min/max
+    FIXED,
+    RANDOM,
   }
 
   @Data
@@ -103,8 +103,6 @@ public class TestPlanSpec {
     POST,
     PUT,
     DELETE,
-    PATCH,
-    HEAD,
-    OPTIONS
+    PATCH
   }
 }

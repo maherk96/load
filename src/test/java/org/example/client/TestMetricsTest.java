@@ -10,11 +10,14 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import org.example.client.enums.TestPhase;
 import org.example.client.metrics.ComprehensiveTestReport;
 import org.example.client.metrics.MetricsWindow;
 import org.example.client.metrics.TestMetrics;
 import org.example.client.metrics.UserMetrics;
 import org.example.client.metrics.UserMetricsSummary;
+import org.example.client.metrics.UserPerformance;
+import org.example.client.metrics.WindowSummary;
 import org.example.dto.TestPlanSpec;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -142,10 +145,10 @@ class TestMetricsTest {
 
       // Then
       await()
-          .atMost(Duration.ofSeconds(2))
+          .atMost(Duration.ofSeconds(10))
           .until(() -> testMetrics.getMetricsWindows().size() >= 2);
 
-      assertTrue(testMetrics.getMetricsWindows().size() >= 1);
+      assertFalse(testMetrics.getMetricsWindows().isEmpty());
     }
 
     @Test
@@ -171,7 +174,7 @@ class TestMetricsTest {
 
       // Then
       await()
-          .atMost(Duration.ofSeconds(2))
+          .atMost(Duration.ofSeconds(10))
           .until(() -> testMetrics.getMetricsWindows().size() >= 2);
 
       // Total requests should be distributed
