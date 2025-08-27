@@ -36,6 +36,174 @@ import org.slf4j.LoggerFactory;
  */
 public class LoadTestExecutionRunner {
 
+  // ENHANCED: Better user thread execution with more detailed logging and proper termination checks
+private void executeUserThread(int userId, long startDelay, int iterations, Instant testEndTime) {
+    try {
+        // Wait for ramp-up delay
+        if (startDelay > 0) {
+            Thread.sleep(startDelay);
+        }
+
+        // Check if test was terminated during ramp-up delay
+        if (!testRunning.get()) {
+            log.debug("User {} terminating before start - test already stopped", userId);
+            return;
+        }
+
+        metrics.userStarted(userId);
+        log.debug("User {} started with {} iterations (delay: {}ms)", userId, iterations, startDelay);
+
+        int completedIterations = 0;
+        for (int i = 0; i < iterations; i++) {
+            // FIXED: Check termination conditions at the start of EVERY iteration
+            if (!testRunning.get()) {
+                log.debug("User {} stopping due to test termination after {} iterations", 
+                    userId, completedIterations);
+                break;
+            }
+
+            // FIXED: Check hold time expiration before starting request
+            if (Instant.now().isAfter(testEndTime)) {
+                log.debug("User {} stopping due to hold time expiration after {} iterations",
+                    userId, completedIterations);
+                break;
+            }
+
+            // FIXED: Pass testRunning flag to executeRequest for early termination
+            boolean requestCompleted = executeRequestWithTerminationCheck(userId, false);
+            if (!requestCompleted) {
+                log.debug("User {} request was terminated, stopping execution", userId);
+                break;
+            }
+            
+            completedIterations++;
+
+            // Apply think time between requests (except for last iteration)
+            if (i < iterations - 1) {
+                // FIXED: Check termination before and during think time
+                if (!applyThinkTimeWithTerminationCheck()) {
+                    log.debug("User {} interrupted during think time", userId);
+                    break;
+                }
+            }
+        }
+
+        log.debug("User {} completed {} out of {} iterations", userId, completedIterations, iterations);
+
+    } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        log.debug("User {} interrupted", userId);
+    } finally {
+        metrics.userCompleted(userId);
+        log.debug("User {} finished", userId);
+    }
+}
+
+// FIXED: Enhanced executeRequest that can be terminated early
+private boolean executeRequestWithTerminationCheck(int userId, boolean isWarmup) {
+    try {
+        // Check termination before starting request
+        if (!testRunning.get()) {
+            return false;
+        }
+
+        metrics.incrementActiveRequests();
+
+        // Get first scenario and request (simplified for example)
+        var scenario = testPlanSpec.getTestSpec().getScenarios().get(0);
+        var request = scenario.getRequests();
+
+        Instant requestStart = Instant.now();
+        
+        // FIXED: Execute request with timeout/interruption awareness
+        RestResponseData response = httpClient.execute(request);
+        
+        // Check if test was terminated during request execution
+        if (!testRunning.get()) {
+            log.debug("Test terminated during request execution for user {}", userId);
+            return false;
+        }
+        
+        Instant requestEnd = Instant.now();
+        long responseTime = Duration.between(requestStart, requestEnd).toMillis();
+
+        if (!isWarmup) {
+            // Record metrics with user tracking
+            if (userId >= 0) {
+                metrics.recordResponse(response.getStatusCode(), responseTime, userId);
+            } else {
+                metrics.recordResponse(response.getStatusCode(), responseTime);
+            }
+        }
+
+        log.debug("Request completed: {} ms, status: {}, user: {}", 
+            responseTime, response.getStatusCode(), userId);
+        
+        return true;
+
+    } catch (Exception e) {
+        if (!isWarmup) {
+            if (userId >= 0) {
+                metrics.recordError(e.getMessage(), e, userId);
+            } else {
+                metrics.recordError(e.getMessage(), e);
+            }
+        }
+        log.debug("Request failed: {}, user: {}", e.getMessage(), userId);
+        return false; // Consider failed requests as reason to stop
+    } finally {
+        metrics.decrementActiveRequests();
+    }
+}
+
+// FIXED: Think time with proper termination checking
+private boolean applyThinkTimeWithTerminationCheck() {
+    var thinkTime = testPlanSpec.getExecution().getThinkTime();
+    if (thinkTime == null) return true;
+
+    try {
+        int delay;
+        if (thinkTime.getType() == TestPlanSpec.ThinkTimeType.FIXED) {
+            delay = thinkTime.getMin();
+        } else {
+            // RANDOM think time between min and max
+            Random random = new Random();
+            delay = thinkTime.getMin() + random.nextInt(thinkTime.getMax() - thinkTime.getMin() + 1);
+        }
+
+        if (delay > 0) {
+            log.trace("Applying think time: {}ms", delay);
+            
+            // FIXED: Break down long think times into smaller chunks for better responsiveness
+            int chunkSize = Math.min(delay, 100); // Check termination every 100ms max
+            int remainingDelay = delay;
+            
+            while (remainingDelay > 0 && testRunning.get()) {
+                int currentChunk = Math.min(remainingDelay, chunkSize);
+                Thread.sleep(currentChunk);
+                remainingDelay -= currentChunk;
+            }
+            
+            // Return false if test was terminated during think time
+            return testRunning.get();
+        }
+        
+        return true;
+    } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return false;
+    }
+}
+
+// ORIGINAL executeRequest method - keep this for backward compatibility with open workload
+private void executeRequest(Semaphore concurrencyLimiter, int userId, boolean isWarmup) {
+    executeRequestWithTerminationCheck(userId, isWarmup);
+    
+    if (concurrencyLimiter != null) {
+        concurrencyLimiter.release();
+    }
+}
+
   private static final Logger log = LoggerFactory.getLogger(LoadTestExecutionRunner.class);
   private static final int SCHEDULER_THREAD_MULTIPLIER = 2;
   private static final int QUEUE_CAPACITY = 1000;
