@@ -1,0 +1,44 @@
+{
+  "taskId": "bfa-ui-regression-load",
+  "taskType": "LOAD_HTTP",
+  "createdAt": "2025-09-14T22:15:00",
+  "data": {
+    "testSpec": {
+      "id": "bfa-ui-regression",
+      "globalConfig": {
+        "baseUrl": "https://lny4fxhftap01u.nam.nsroot.net:8443",
+        "headers": {
+          "Accept": "application/json"
+        },
+        "timeouts": {
+          "connectionTimeoutMs": 5000
+        }
+      },
+      "scenarios": [
+        {
+          "name": "Fetch Regression Launch",
+          "requests": [
+            {
+              "method": "GET",
+              "path": "/qaportal/api/launches/launch/BfaUiRegression-396a61d26329"
+            }
+          ]
+        }
+      ]
+    },
+    "execution": {
+      "thinkTime": {
+        "type": "FIXED",
+        "min": 200,
+        "max": 200
+      },
+      "loadModel": {
+        "type": "CLOSED",
+        "users": 5,
+        "rampUp": "5s",
+        "holdFor": "10s",
+        "iterations": 3
+      }
+    }
+  }
+}
