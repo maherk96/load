@@ -8,7 +8,7 @@ import lombok.Data;
 // Simplified window summary without response times array
 @Data
 @Builder
-class WindowSummary {
+public class WindowSummary {
   private final int windowNumber;
   private final Instant startTime;
   private final Instant endTime;

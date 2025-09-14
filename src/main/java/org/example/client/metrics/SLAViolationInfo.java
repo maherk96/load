@@ -7,7 +7,7 @@ import org.example.client.enums.TestPhase;
 
 @Data
 @Builder
-class SLAViolationInfo {
+public class SLAViolationInfo {
   private final Instant timestamp;
   private final String violationType;
   private final double actualValue;

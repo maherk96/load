@@ -6,7 +6,7 @@ import lombok.Data;
 
 @Data
 @Builder
-class ErrorInfo {
+public class ErrorInfo {
   private final Instant timestamp;
   private final String message;
   private final String exceptionType;
