@@ -32,7 +32,7 @@ public class TestPlanSpec {
   @Data
   public static class Scenario {
     private String name;
-    private Request requests;
+    private List<Request> requests;
   }
 
   @Data
